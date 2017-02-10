@@ -5,9 +5,11 @@ extern crate base64;
 extern crate docopt;
 extern crate hyper;
 extern crate rand;
+extern crate regex;
 extern crate rustc_serialize;
 extern crate serde_json;
 
+use regex::RegexSet;
 use hyper::{Client, Url};
 use rand::{thread_rng, Rng};
 use serde_json::Value;
@@ -15,6 +17,7 @@ use std::fs::OpenOptions;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc::channel;
+use std::sync::Arc;
 use std::thread;
 
 docopt!(Args derive Debug, "
@@ -34,11 +37,21 @@ If no subreddits are given, default to EarthPorn.
 
 ");
 
+// This is apparently necessary: https://github.com/reddit/reddit/issues/283
+fn decode_url_entities(url: &str) -> String {
+    url.replace("&amp;", "&")
+}
+
 fn main() {
     let mut args: Args = Args::docopt().decode().unwrap_or_else(|e| e.exit());
     if args.arg_subreddits.len() == 0 {
         args.arg_subreddits.push("EarthPorn".to_string());
     }
+
+    let image_url_regex =
+        Arc::new(RegexSet::new(&[r"https?://(\w+\.)?imgur.com/[[:alnum:]]+(\.[[:alnum:]]{3})?",
+                                 r"https?://(\w+\.)?reddituploads.com/[[:alnum:]]+\?.+"])
+            .unwrap());
 
     let (tx, rx) = channel();
     let mut joins = Vec::new();
@@ -46,6 +59,7 @@ fn main() {
         let tx_clone = tx.clone();
         let out_path = PathBuf::from(&args.flag_out);
         let sub = sub_ref.to_string();
+        let image_url_regex = image_url_regex.clone();
         let handle = thread::spawn(move || {
             let mut out = Vec::new();
             let client = Client::new();
@@ -71,21 +85,32 @@ fn main() {
             if let &Value::Array(ref items) = children {
                 for child in items.iter() {
                     let ref child_data = child["data"];
-                    if child_data["post_hint"].as_str() != Some("image") {
-                        continue;
-                    }
                     let url_data = match child_data["url"].as_str() {
-                        Some(s) => s,
-                        _ => continue,
+                        Some(s) => decode_url_entities(s),
+                        _ => {
+                            println!("given post has no url: {:?}", child_data["title"]);
+                            continue;
+                        }
                     };
 
-                    if let Err(e) = Url::parse(url_data) {
+                    if let Err(e) = Url::parse(&url_data) {
                         println!("given post has invalid url: {}", e);
                         continue;
                     }
 
-                    let encoded_name = base64::encode_mode(url_data.as_bytes(), base64::Base64Mode::UrlSafe);
-                    let target_path = match out_path.join(encoded_name.trim_right_matches('=')).into_os_string().into_string() {
+                    if child_data["post_hint"].as_str() != Some("image") {
+                        if !image_url_regex.is_match(&url_data) {
+                            println!("skipping post which is apparently not an image: {}",
+                                     &url_data);
+                            continue;
+                        }
+                    }
+
+                    let encoded_name = base64::encode_mode(url_data.as_bytes(),
+                                                           base64::Base64Mode::UrlSafe);
+                    let target_path = match out_path.join(encoded_name.trim_right_matches('='))
+                        .into_os_string()
+                        .into_string() {
                         Ok(v) => v,
                         Err(e) => {
                             println!("failed to convert {:?} to string", e);
@@ -93,19 +118,20 @@ fn main() {
                         }
                     };
 
-                    let mut out_file = match OpenOptions::new().write(true).create_new(true).open(&target_path) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            if e.kind() == std::io::ErrorKind::AlreadyExists {
-                                println!("already have {}", url_data);
-                                out.push(target_path);
-                            } else {
-                                println!("error creating {:?}: {}", target_path, e);
+                    let mut out_file =
+                        match OpenOptions::new().write(true).create_new(true).open(&target_path) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                                    println!("already have {}", url_data);
+                                    out.push(target_path);
+                                } else {
+                                    println!("error creating {:?}: {}", target_path, e);
+                                }
+                                continue;
                             }
-                            continue;
-                        }
-                    };
-                    let mut content_reader = match client.get(url_data).send() {
+                        };
+                    let mut content_reader = match client.get(&url_data).send() {
                         Ok(v) => v,
                         Err(e) => {
                             println!("failed to download {}: {}", url_data, e);
@@ -136,8 +162,31 @@ fn main() {
         }
     }
 
-    let sample_path = thread_rng().choose(&samples).unwrap();
-    if let Err(e) = Command::new("sh").arg("-c").arg(format!("{} {}", args.flag_cmd, sample_path)).spawn() {
-        println!("failed to spawn command {:?}: {}", args.flag_cmd, e);
+    for i in 0..3 {
+        let sample_path = thread_rng().choose(&samples).unwrap();
+        println!("displaying {}", sample_path);
+        let sub_cmd_res = match Command::new("sh")
+            .arg("-c")
+            .arg(format!("{} {}", args.flag_cmd, sample_path))
+            .spawn() {
+            Ok(mut handle) => handle.wait(),
+            Err(e) => {
+                println!("failed to spawn command {:?}: {}", args.flag_cmd, e);
+                break;
+            }
+        };
+        match sub_cmd_res {
+            Ok(v) => {
+                if !v.success() {
+                    println!("sub command returned error exit status");
+                    if i != 2 {
+                        println!("retrying {} more", 2 - i);
+                        continue;
+                    }
+                }
+            }
+            Err(e) => println!("failed to get result of sub command: {}", e),
+        }
+        break;
     }
 }
