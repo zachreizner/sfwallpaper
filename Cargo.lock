@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "sfwallpaper"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.3.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "getopts 0.2.18 (registry+https://github.com/rust-lang/crates.io-index)",

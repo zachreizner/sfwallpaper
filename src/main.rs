@@ -9,6 +9,7 @@ use std::process::Command;
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 // This is apparently necessary: https://github.com/reddit/reddit/issues/283
 fn decode_url_entities(url: &str) -> String {
@@ -98,12 +99,22 @@ fn main() {
             let mut out = Vec::new();
             let sub_url = format!("https://www.reddit.com/r/{}.json", &sub);
             println!("downloading sub {}", &sub);
-            let res: Subreddit = match get(&sub_url).and_then(|mut r| r.json()) {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("error getting subreddit {}: {}", &sub, e);
+            let mut retry_count = 3;
+            let mut sleep_seconds = 5;
+            let res: Subreddit = loop {
+                match get(&sub_url).and_then(|mut r| r.json()) {
+                    Ok(v) => break v,
+                    Err(e) => {
+                        println!("error getting subreddit {}: {}", &sub, e);
+                    }
+                };
+                if retry_count == 0 {
                     return;
                 }
+                retry_count -= 1;
+                println!("retrying in {} seconds", sleep_seconds);
+                thread::sleep(Duration::from_secs(sleep_seconds));
+                sleep_seconds *= 2;
             };
             println!("done downloading sub {}", &sub);
 
