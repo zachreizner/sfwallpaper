@@ -1,14 +1,18 @@
 [package]
 name = "sfwallpaper"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Zach Reizner <zach297@gmail.com>"]
+edition = "2018"
+
+[profile.release]
+lto = true
+panic = 'abort'
 
 [dependencies]
 base64 = "0.3"
-docopt = "0.7"
-docopt_macros = "0.7"
-hyper = "0.9"
+getopts = "*"
+reqwest = "0.9"
 rand = "0.3"
 regex = "0.2"
-rustc-serialize = "0.3"
-serde_json = "0.9"
+serde = "1"
+serde_derive = "1"
